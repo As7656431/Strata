@@ -2465,8 +2465,33 @@ bool FileExpertSource::open_prompt_direct(std::string& why) {
         pdirect_.push_back((void*) (intptr_t) fd);
     }
     return true;
+#elif defined(_WIN32)
+    // #3065: experts.bin opened a second time, unbuffered and overlapped, for the prompt path's batched reads while the
+    // decode keeps the mapping.  NTFS serves the unbuffered reads of a mapped file one at a time (3.4 GB/s on a PCIe 5
+    // drive, see read_direct), which is still more than the copies out of the mapping get when the RAM cannot hold the
+    // experts: on a 32 GB PC with a 35.5 GB experts.bin they faulted the pages in at 0.2-0.5 GB/s, these reads ran at
+    // about 1.3 GB/s (the drive's limit) and left the decode's cached experts in RAM.  Opt-in (STRATA_PROMPT_DIRECT=1).
+    if (base_ == nullptr || paths_.empty()) { why = "no expert files open"; return false; }
+    if (!role_ptr_.empty()) { why = "the GGUF in place (experts.bin only)"; return false; }
+    if (!direct_.empty()) { why = "the file tier reads unbuffered already"; return false; }
+    if (!pdirect_.empty()) return true;
+    for (const std::string& path : paths_) {
+        const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+        std::vector<wchar_t> w((size_t) (wide > 0 ? wide : 1), L'\0');
+        if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w.data(), wide);
+        HANDLE h = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                               FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            why = "cannot open " + path + " unbuffered (error " + std::to_string((unsigned long long) GetLastError()) + ")";
+            for (void* d : pdirect_) close_direct(d);
+            pdirect_.clear();
+            return false;
+        }
+        pdirect_.push_back(h);
+    }
+    return true;
 #else
-    why = "Linux only (NTFS serves unbuffered reads of a mapped file one at a time)";
+    why = "Linux and Windows only";
     return false;
 #endif
 }
@@ -2761,7 +2786,7 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
                 continue;
             }
         }
-        sc.req.push_back({(HANDLE) direct_[(size_t) x.file], x.a0, x.size, total});
+        sc.req.push_back({(HANDLE) (direct_.empty() ? pdirect_ : direct_)[(size_t) x.file], x.a0, x.size, total});
         total += x.size;
         last_file = x.file;
         x.req = sc.req.size() - 1;
