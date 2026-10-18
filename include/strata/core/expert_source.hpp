@@ -1067,6 +1067,7 @@ private:
     bool map_view(std::string& why);
     std::vector<std::string> paths_;          ///< the mapped files, as maps_
     std::vector<void*> pdirect_;              ///< open_prompt_direct: O_DIRECT fds (Linux) / unbuffered handles (Windows) for copy_blobs only
+    void* pbuffered_ = nullptr;               ///< #3065 (Windows): experts.bin, cached + overlapped (STRATA_PREFILL_DIRECT_RAM >= 2)
     std::vector<void*> direct_;               ///< #286: per file, an unbuffered handle (Windows) or O_DIRECT fd (Linux)
     std::vector<int> role_file_;              ///< 3 x n_layers: index into maps_ / direct_
     /// blobs assembled in the stage buffers (`blob` hands those out): the GGUF in place, or any unbuffered source
